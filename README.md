@@ -1,5 +1,7 @@
 # go-webrtcvad
 
+[![Build Status]( https://dev.azure.com/baabaaox/go-webrtcvad/_apis/build/status/7?branchName=master)](https://dev.azure.com/baabaaox/go-webrtcvad/_build/latest?definitionId=7&branchName=master)
+
 This project rewrite from [maxhawkins/go-webrtcvad](https://github.com/maxhawkins/go-webrtcvad). The WebRTC source code download form [WebRTC lkgr](https://webrtc.googlesource.com/src/+/refs/heads/lkgr). The Abseil Common Libraries (C++) source code download from [abseil/abseil-cpp](https://github.com/abseil/abseil-cpp). Need C++ compiler with support for C++11.
 
 ## Installation
