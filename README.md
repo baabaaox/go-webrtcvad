@@ -25,8 +25,8 @@ import (
 const (
     // VadMode vad mode
     VadMode = 0
-    // SimpleRate simple rate
-    SimpleRate = 16000
+    // SampleRate sample rate
+    SampleRate = 16000
     // BitDepth bit depth
     BitDepth = 16
     // FrameDuration frame duration
@@ -36,8 +36,8 @@ const (
 var (
     audioFile   *os.File
     frameIndex  = 0
-    frameSize   = SimpleRate / 1000 * FrameDuration
-    frameBuffer = make([]byte, SimpleRate/1000*FrameDuration*BitDepth/8)
+    frameSize   = SampleRate / 1000 * FrameDuration
+    frameBuffer = make([]byte, SampleRate/1000*FrameDuration*BitDepth/8)
     frameActive = false
 )
 
@@ -66,7 +66,7 @@ func main() {
         if err != nil {
             return
         }
-        frameActive, err = webrtcvad.Process(vadInst, SimpleRate, frameBuffer, frameSize)
+        frameActive, err = webrtcvad.Process(vadInst, SampleRate, frameBuffer, frameSize)
         if err != nil {
             log.Fatal(err)
         }
