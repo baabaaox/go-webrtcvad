@@ -3,6 +3,7 @@ package webrtcvad
 // #cgo linux CPPFLAGS: -DWEBRTC_POSIX
 // #cgo darwin CPPFLAGS: -DWEBRTC_POSIX
 // #cgo windows CPPFLAGS: -DWEBRTC_WIN
+// #cgo CPPFLAGS: -Wno-deprecated-builtins
 // #cgo CPPFLAGS: -I${SRCDIR}/webrtc_lkgr
 // #cgo CXXFLAGS: -std=c++11
 // #include "webrtc_lkgr/common_audio/vad/webrtc_vad.c"
