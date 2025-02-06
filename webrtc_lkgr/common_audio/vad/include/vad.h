@@ -14,7 +14,7 @@
 #include <memory>
 
 #include "common_audio/vad/include/webrtc_vad.h"
-#include "rtc_base/checks.h"
+// #include "rtc_base/checks.h"
 
 namespace webrtc {
 

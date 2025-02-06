@@ -1,0 +1,582 @@
+From d00458156e14507bb8e9f8397884f12d95d6a500 Mon Sep 17 00:00:00 2001
+From: hulk <jjyy@outlook.com>
+Date: Fri, 7 Feb 2025 20:18:02 +0800
+Subject: [PATCH] Ported https://webrtc.googlesource.com/src/+/8e55dca89f4e39241f9e3ecd25ab0ebbf5d1ab37/common_audio/
+
+---
+ .../resample_by_2_internal.c                  |  11 +-
+ common_audio/signal_processing/spl.c          | 231 ++++++++++++++++++
+ common_audio/signal_processing/spl.h          | 106 ++++++++
+ common_audio/vad/include/vad.h                |   2 +-
+ common_audio/vad/vad_core.c                   |   8 +-
+ common_audio/vad/vad_core.h                   |   3 +-
+ common_audio/vad/vad_filterbank.c             |  12 +-
+ common_audio/vad/vad_gmm.c                    |   2 +-
+ common_audio/vad/vad_sp.c                     |   6 +-
+ common_audio/vad/webrtc_vad.c                 |   8 +-
+ 10 files changed, 362 insertions(+), 27 deletions(-)
+ create mode 100644 common_audio/signal_processing/spl.c
+ create mode 100644 common_audio/signal_processing/spl.h
+
+diff --git a/common_audio/signal_processing/resample_by_2_internal.c b/common_audio/signal_processing/resample_by_2_internal.c
+index a68eced..7759dd5 100644
+--- a/common_audio/signal_processing/resample_by_2_internal.c
++++ b/common_audio/signal_processing/resample_by_2_internal.c
+@@ -15,7 +15,7 @@
+
+ #include "common_audio/signal_processing/resample_by_2_internal.h"
+
+-#include "rtc_base/sanitizer.h"
++// #include "rtc_base/sanitizer.h"
+
+ // allpass filter coefficients.
+ static const int16_t kResampleAllpass[2][3] = {{821, 6110, 12382},
+@@ -27,8 +27,7 @@ static const int16_t kResampleAllpass[2][3] = {{821, 6110, 12382},
+ // OVERWRITTEN! output: int16_t (saturated) (of length len/2) state:  filter
+ // state array; length = 8
+
+-void RTC_NO_SANITIZE("signed-integer-overflow")  // bugs.webrtc.org/5486
+-    WebRtcSpl_DownBy2IntToShort(int32_t* in,
++void WebRtcSpl_DownBy2IntToShort(int32_t* in,
+                                 int32_t len,
+                                 int16_t* out,
+                                 int32_t* state) {
+@@ -121,8 +120,7 @@ void RTC_NO_SANITIZE("signed-integer-overflow")  // bugs.webrtc.org/5486
+ // output: int32_t (shifted 15 positions to the left, + offset 16384) (of length
+ // len/2) state:  filter state array; length = 8
+
+-void RTC_NO_SANITIZE("signed-integer-overflow")  // bugs.webrtc.org/5486
+-    WebRtcSpl_DownBy2ShortToInt(const int16_t* in,
++void WebRtcSpl_DownBy2ShortToInt(const int16_t* in,
+                                 int32_t len,
+                                 int32_t* out,
+                                 int32_t* state) {
+@@ -543,8 +541,7 @@ void WebRtcSpl_LPBy2ShortToInt(const int16_t* in,
+ // input:  int32_t (shifted 15 positions to the left, + offset 16384)
+ // output: int32_t (normalized, not saturated)
+ // state:  filter state array; length = 8
+-void RTC_NO_SANITIZE("signed-integer-overflow")  // bugs.webrtc.org/5486
+-    WebRtcSpl_LPBy2IntToInt(const int32_t* in,
++void WebRtcSpl_LPBy2IntToInt(const int32_t* in,
+                             int32_t len,
+                             int32_t* out,
+                             int32_t* state) {
+diff --git a/common_audio/signal_processing/spl.c b/common_audio/signal_processing/spl.c
+new file mode 100644
+index 0000000..e552d13
+--- /dev/null
++++ b/common_audio/signal_processing/spl.c
+@@ -0,0 +1,231 @@
++#include "common_audio/signal_processing/spl.h"
++
++const int8_t kWebRtcSpl_CountLeadingZeros32_Table[64] = {
++    32, 8,  17, -1, -1, 14, -1, -1, -1, 20, -1, -1, -1, 28, -1, 18,
++    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0,  26, 25, 24,
++    4,  11, 23, 31, 3,  7,  10, 16, 22, 30, -1, -1, 2,  6,  13, 9,
++    -1, 15, -1, 21, -1, 29, 19, -1, -1, -1, -1, -1, 1,  27, 5,  12,
++};
++
++static const int16_t kCoefficients48To32[2][8] = {
++    {778, -2050, 1087, 23285, 12903, -3783, 441, 222},
++    {222, 441, -3783, 12903, 23285, 1087, -2050, 778}};
++
++void WebRtcSpl_ResetResample48khzTo8khz(WebRtcSpl_State48khzTo8khz* state) {
++  memset(state->S_48_24, 0, 8 * sizeof(int32_t));
++  memset(state->S_24_24, 0, 16 * sizeof(int32_t));
++  memset(state->S_24_16, 0, 8 * sizeof(int32_t));
++  memset(state->S_16_8, 0, 8 * sizeof(int32_t));
++}
++
++void WebRtcSpl_Resample48khzTo32khz(const int32_t* In, int32_t* Out, size_t K) {
++  /////////////////////////////////////////////////////////////
++  // Filter operation:
++  //
++  // Perform resampling (3 input samples -> 2 output samples);
++  // process in sub blocks of size 3 samples.
++  int32_t tmp;
++  size_t m;
++
++  for (m = 0; m < K; m++) {
++    tmp = 1 << 14;
++    tmp += kCoefficients48To32[0][0] * In[0];
++    tmp += kCoefficients48To32[0][1] * In[1];
++    tmp += kCoefficients48To32[0][2] * In[2];
++    tmp += kCoefficients48To32[0][3] * In[3];
++    tmp += kCoefficients48To32[0][4] * In[4];
++    tmp += kCoefficients48To32[0][5] * In[5];
++    tmp += kCoefficients48To32[0][6] * In[6];
++    tmp += kCoefficients48To32[0][7] * In[7];
++    Out[0] = tmp;
++
++    tmp = 1 << 14;
++    tmp += kCoefficients48To32[1][0] * In[1];
++    tmp += kCoefficients48To32[1][1] * In[2];
++    tmp += kCoefficients48To32[1][2] * In[3];
++    tmp += kCoefficients48To32[1][3] * In[4];
++    tmp += kCoefficients48To32[1][4] * In[5];
++    tmp += kCoefficients48To32[1][5] * In[6];
++    tmp += kCoefficients48To32[1][6] * In[7];
++    tmp += kCoefficients48To32[1][7] * In[8];
++    Out[1] = tmp;
++
++    // update pointers
++    In += 3;
++    Out += 2;
++  }
++}
++
++void WebRtcSpl_Resample48khzTo8khz(const int16_t* in,
++                                   int16_t* out,
++                                   WebRtcSpl_State48khzTo8khz* state,
++                                   int32_t* tmpmem) {
++  ///// 48 --> 24 /////
++  // int16_t  in[480]
++  // int32_t out[240]
++  /////
++  WebRtcSpl_DownBy2ShortToInt(in, 480, tmpmem + 256, state->S_48_24);
++
++  ///// 24 --> 24(LP) /////
++  // int32_t  in[240]
++  // int32_t out[240]
++  /////
++  WebRtcSpl_LPBy2IntToInt(tmpmem + 256, 240, tmpmem + 16, state->S_24_24);
++
++  ///// 24 --> 16 /////
++  // int32_t  in[240]
++  // int32_t out[160]
++  /////
++  // copy state to and from input array
++  memcpy(tmpmem + 8, state->S_24_16, 8 * sizeof(int32_t));
++  memcpy(state->S_24_16, tmpmem + 248, 8 * sizeof(int32_t));
++  WebRtcSpl_Resample48khzTo32khz(tmpmem + 8, tmpmem, 80);
++
++  ///// 16 --> 8 /////
++  // int32_t  in[160]
++  // int16_t out[80]
++  /////
++  WebRtcSpl_DownBy2IntToShort(tmpmem, 160, out, state->S_16_8);
++}
++
++uint32_t WebRtcSpl_DivU32U16(uint32_t num, uint16_t den) {
++  // Guard against division with 0
++  if (den != 0) {
++    return (uint32_t)(num / den);
++  } else {
++    return (uint32_t)0xFFFFFFFF;
++  }
++}
++
++int32_t WebRtcSpl_DivW32W16(int32_t num, int16_t den) {
++  // Guard against division with 0
++  if (den != 0) {
++    return (int32_t)(num / den);
++  } else {
++    return (int32_t)0x7FFFFFFF;
++  }
++}
++
++int16_t WebRtcSpl_DivW32W16ResW16(int32_t num, int16_t den) {
++  // Guard against division with 0
++  if (den != 0) {
++    return (int16_t)(num / den);
++  } else {
++    return (int16_t)0x7FFF;
++  }
++}
++
++int32_t WebRtcSpl_DivResultInQ31(int32_t num, int32_t den) {
++  int32_t L_num = num;
++  int32_t L_den = den;
++  int32_t div = 0;
++  int k = 31;
++  int change_sign = 0;
++
++  if (num == 0)
++    return 0;
++
++  if (num < 0) {
++    change_sign++;
++    L_num = -num;
++  }
++  if (den < 0) {
++    change_sign++;
++    L_den = -den;
++  }
++  while (k--) {
++    div <<= 1;
++    L_num <<= 1;
++    if (L_num >= L_den) {
++      L_num -= L_den;
++      div++;
++    }
++  }
++  if (change_sign == 1) {
++    div = -div;
++  }
++  return div;
++}
++
++int32_t WebRtcSpl_DivW32HiLow(int32_t num, int16_t den_hi, int16_t den_low) {
++  int16_t approx, tmp_hi, tmp_low, num_hi, num_low;
++  int32_t tmpW32;
++
++  approx = (int16_t)WebRtcSpl_DivW32W16((int32_t)0x1FFFFFFF, den_hi);
++  // result in Q14 (Note: 3FFFFFFF = 0.5 in Q30)
++
++  // tmpW32 = 1/den = approx * (2.0 - den * approx) (in Q30)
++  tmpW32 = (den_hi * approx << 1) + ((den_low * approx >> 15) << 1);
++  // tmpW32 = den * approx
++
++  // result in Q30 (tmpW32 = 2.0-(den*approx))
++  tmpW32 = (int32_t)((int64_t)0x7fffffffL - tmpW32);
++
++  // Store tmpW32 in hi and low format
++  tmp_hi = (int16_t)(tmpW32 >> 16);
++  tmp_low = (int16_t)((tmpW32 - ((int32_t)tmp_hi << 16)) >> 1);
++
++  // tmpW32 = 1/den in Q29
++  tmpW32 = (tmp_hi * approx + (tmp_low * approx >> 15)) << 1;
++
++  // 1/den in hi and low format
++  tmp_hi = (int16_t)(tmpW32 >> 16);
++  tmp_low = (int16_t)((tmpW32 - ((int32_t)tmp_hi << 16)) >> 1);
++
++  // Store num in hi and low format
++  num_hi = (int16_t)(num >> 16);
++  num_low = (int16_t)((num - ((int32_t)num_hi << 16)) >> 1);
++
++  // num * (1/den) by 32 bit multiplication (result in Q28)
++
++  tmpW32 =
++      num_hi * tmp_hi + (num_hi * tmp_low >> 15) + (num_low * tmp_hi >> 15);
++
++  // Put result in Q31 (convert from Q28)
++  tmpW32 = WEBRTC_SPL_LSHIFT_W32(tmpW32, 3);
++
++  return tmpW32;
++}
++
++int16_t WebRtcSpl_GetScalingSquare(int16_t* in_vector,
++                                   size_t in_vector_length,
++                                   size_t times) {
++  int16_t nbits = WebRtcSpl_GetSizeInBits((uint32_t)times);
++  size_t i;
++  int16_t smax = -1;
++  int16_t sabs;
++  int16_t* sptr = in_vector;
++  int16_t t;
++  size_t looptimes = in_vector_length;
++
++  for (i = looptimes; i > 0; i--) {
++    sabs = (*sptr > 0 ? *sptr++ : -*sptr++);
++    smax = (sabs > smax ? sabs : smax);
++  }
++  t = WebRtcSpl_NormW32(WEBRTC_SPL_MUL(smax, smax));
++
++  if (smax == 0) {
++    return 0;  // Since norm(0) returns 0
++  } else {
++    return (t > nbits) ? 0 : nbits - t;
++  }
++}
++
++int32_t WebRtcSpl_Energy(int16_t* vector,
++                         size_t vector_length,
++                         int* scale_factor) {
++  int32_t en = 0;
++  size_t i;
++  int scaling =
++      WebRtcSpl_GetScalingSquare(vector, vector_length, vector_length);
++  size_t looptimes = vector_length;
++  int16_t* vectorptr = vector;
++
++  for (i = 0; i < looptimes; i++) {
++    en += (*vectorptr * *vectorptr) >> scaling;
++    vectorptr++;
++  }
++  *scale_factor = scaling;
++
++  return en;
++}
+\ No newline at end of file
+diff --git a/common_audio/signal_processing/spl.h b/common_audio/signal_processing/spl.h
+new file mode 100644
+index 0000000..4a04410
+--- /dev/null
++++ b/common_audio/signal_processing/spl.h
+@@ -0,0 +1,106 @@
++#ifndef COMMON_AUDIO_SIGNAL_PROCESSING_SPL_H_
++#define COMMON_AUDIO_SIGNAL_PROCESSING_SPL_H_
++
++#include <stdint.h>
++#include <string.h>
++
++#define WEBRTC_SPL_WORD16_MAX 32767
++
++#define WEBRTC_SPL_MUL_16_32_RSFT11(a, b)          \
++        (WEBRTC_SPL_MUL_16_16(a, (b) >> 16) * (1 << 5) + \
++        (((WEBRTC_SPL_MUL_16_U16(a, (uint16_t)(b)) >> 1) + 0x0200) >> 10))
++#define WEBRTC_SPL_MUL_16_32_RSFT14(a, b)          \
++        (WEBRTC_SPL_MUL_16_16(a, (b) >> 16) * (1 << 2) + \
++        (((WEBRTC_SPL_MUL_16_U16(a, (uint16_t)(b)) >> 1) + 0x1000) >> 13))
++#define WEBRTC_SPL_MUL_16_32_RSFT15(a, b)            \
++        ((WEBRTC_SPL_MUL_16_16(a, (b) >> 16) * (1 << 1)) + \
++        (((WEBRTC_SPL_MUL_16_U16(a, (uint16_t)(b)) >> 1) + 0x2000) >> 14))
++
++#define WEBRTC_SPL_MUL_16_16_RSFT(a, b, c) (WEBRTC_SPL_MUL_16_16(a, b) >> (c))
++
++#define WEBRTC_SPL_MUL_16_16_RSFT_WITH_ROUND(a, b, c) \
++  ((WEBRTC_SPL_MUL_16_16(a, b) + ((int32_t)(((int32_t)1) << ((c)-1)))) >> (c))
++
++// C + the 32 most significant bits of A * B
++#define WEBRTC_SPL_SCALEDIFF32(A, B, C) \
++  (C + (B >> 16) * A + (((uint32_t)(B & 0x0000FFFF) * A) >> 16))
++
++#define WEBRTC_SPL_SAT(a, b, c) (b > a ? a : b < c ? c : b)
++
++// Shifting with negative numbers allowed
++// Positive means left shift
++#define WEBRTC_SPL_SHIFT_W32(x, c) ((c) >= 0 ? (x) * (1 << (c)) : (x) >> -(c))
++
++// Shifting with negative numbers not allowed
++// We cannot do casting here due to signed/unsigned problem
++#define WEBRTC_SPL_LSHIFT_W32(x, c) ((x) << (c))
++
++#define WEBRTC_SPL_RSHIFT_U32(x, c) ((uint32_t)(x) >> (c))
++
++#define WEBRTC_SPL_RAND(a) ((int16_t)((((int16_t)a * 18816) >> 7) & 0x00007fff))
++
++#define WEBRTC_SPL_MUL(a, b) ((int32_t)((int32_t)(a) * (int32_t)(b)))
++
++extern const int8_t kWebRtcSpl_CountLeadingZeros32_Table[64];
++
++static __inline int WebRtcSpl_CountLeadingZeros32_NotBuiltin(uint32_t n) {
++  // Normalize n by rounding up to the nearest number that is a sequence of 0
++  // bits followed by a sequence of 1 bits. This number has the same number of
++  // leading zeros as the original n. There are exactly 33 such values.
++  n |= n >> 1;
++  n |= n >> 2;
++  n |= n >> 4;
++  n |= n >> 8;
++  n |= n >> 16;
++
++  // Multiply the modified n with a constant selected (by exhaustive search)
++  // such that each of the 33 possible values of n give a product whose 6 most
++  // significant bits are unique. Then look up the answer in the table.
++  return kWebRtcSpl_CountLeadingZeros32_Table[(n * 0x8c0b2891) >> 26];
++}
++
++static __inline int WebRtcSpl_CountLeadingZeros32(uint32_t n) {
++#ifdef __GNUC__
++  return n == 0 ? 32 : __builtin_clz(n);
++#else
++  return WebRtcSpl_CountLeadingZeros32_NotBuiltin(n);
++#endif
++}
++
++static __inline int16_t WebRtcSpl_GetSizeInBits(uint32_t n) {
++  return 32 - WebRtcSpl_CountLeadingZeros32(n);
++}
++
++static __inline int16_t WebRtcSpl_NormW32(int32_t a) {
++  return a == 0 ? 0 : WebRtcSpl_CountLeadingZeros32(a < 0 ? ~a : a) - 1;
++}
++
++static __inline int16_t WebRtcSpl_NormU32(uint32_t a) {
++  return a == 0 ? 0 : WebRtcSpl_CountLeadingZeros32(a);
++}
++
++typedef struct {
++  int32_t S_48_24[8];
++  int32_t S_24_24[16];
++  int32_t S_24_16[8];
++  int32_t S_16_8[8];
++} WebRtcSpl_State48khzTo8khz;
++
++int32_t WebRtcSpl_DivW32W16(int32_t num, int16_t den);
++
++void WebRtcSpl_Resample48khzTo8khz(const int16_t* in,
++                                   int16_t* out,
++                                   WebRtcSpl_State48khzTo8khz* state,
++                                   int32_t* tmpmem);
++
++void WebRtcSpl_ResetResample48khzTo8khz(WebRtcSpl_State48khzTo8khz* state);
++
++int16_t WebRtcSpl_GetScalingSquare(int16_t* in_vector,
++                                   size_t in_vector_length,
++                                   size_t times);
++
++int32_t WebRtcSpl_Energy(int16_t* vector,
++                         size_t vector_length,
++                         int* scale_factor);
++
++#endif  // COMMON_AUDIO_SIGNAL_PROCESSING_SPL_H_
+\ No newline at end of file
+diff --git a/common_audio/vad/include/vad.h b/common_audio/vad/include/vad.h
+index b15275b..ada3875 100644
+--- a/common_audio/vad/include/vad.h
++++ b/common_audio/vad/include/vad.h
+@@ -14,7 +14,7 @@
+ #include <memory>
+
+ #include "common_audio/vad/include/webrtc_vad.h"
+-#include "rtc_base/checks.h"
++// #include "rtc_base/checks.h"
+
+ namespace webrtc {
+
+diff --git a/common_audio/vad/vad_core.c b/common_audio/vad/vad_core.c
+index 9b40f42..a43fcaa 100644
+--- a/common_audio/vad/vad_core.c
++++ b/common_audio/vad/vad_core.c
+@@ -10,11 +10,12 @@
+
+ #include "common_audio/vad/vad_core.h"
+
+-#include "common_audio/signal_processing/include/signal_processing_library.h"
++// #include "common_audio/signal_processing/include/signal_processing_library.h"
++#include "common_audio/signal_processing/resample_by_2_internal.h"
+ #include "common_audio/vad/vad_filterbank.h"
+ #include "common_audio/vad/vad_gmm.h"
+ #include "common_audio/vad/vad_sp.h"
+-#include "rtc_base/sanitizer.h"
++// #include "rtc_base/sanitizer.h"
+
+ // Spectrum Weighting
+ static const int16_t kSpectrumWeight[kNumChannels] = {6, 8, 10, 12, 14, 16};
+@@ -115,8 +116,7 @@ static int32_t WeightedAverage(int16_t* data,
+ // undefined behavior, so not a good idea; this just makes UBSan ignore the
+ // violation, so that our old code can continue to do what it's always been
+ // doing.)
+-static inline int32_t RTC_NO_SANITIZE("signed-integer-overflow")
+-    OverflowingMulS16ByS32ToS32(int16_t a, int32_t b) {
++static inline int32_t OverflowingMulS16ByS32ToS32(int16_t a, int32_t b) {
+   return a * b;
+ }
+
+diff --git a/common_audio/vad/vad_core.h b/common_audio/vad/vad_core.h
+index fbaf970..673a335 100644
+--- a/common_audio/vad/vad_core.h
++++ b/common_audio/vad/vad_core.h
+@@ -15,7 +15,8 @@
+ #ifndef COMMON_AUDIO_VAD_VAD_CORE_H_
+ #define COMMON_AUDIO_VAD_VAD_CORE_H_
+
+-#include "common_audio/signal_processing/include/signal_processing_library.h"
++// #include "common_audio/signal_processing/include/signal_processing_library.h"
++#include "common_audio/signal_processing/spl.h"
+
+ // TODO(https://bugs.webrtc.org/14476): When converted to C++, remove the macro.
+ #if defined(__cplusplus)
+diff --git a/common_audio/vad/vad_filterbank.c b/common_audio/vad/vad_filterbank.c
+index 32830fa..695b0c3 100644
+--- a/common_audio/vad/vad_filterbank.c
++++ b/common_audio/vad/vad_filterbank.c
+@@ -10,8 +10,8 @@
+
+ #include "common_audio/vad/vad_filterbank.h"
+
+-#include "common_audio/signal_processing/include/signal_processing_library.h"
+-#include "rtc_base/checks.h"
++// #include "common_audio/signal_processing/include/signal_processing_library.h"
++// #include "rtc_base/checks.h"
+
+ // Constants used in LogOfEnergy().
+ static const int16_t kLogConst = 24660;          // 160*log10(2) in Q9.
+@@ -166,8 +166,8 @@ static void LogOfEnergy(const int16_t* data_in,
+   // we eventually will mask out the fractional part.
+   uint32_t energy = 0;
+
+-  RTC_DCHECK(data_in);
+-  RTC_DCHECK_GT(data_length, 0);
++  // RTC_DCHECK(data_in);
++  // RTC_DCHECK_GT(data_length, 0);
+
+   energy =
+       (uint32_t)WebRtcSpl_Energy((int16_t*)data_in, data_length, &tot_rshifts);
+@@ -269,8 +269,8 @@ int16_t WebRtcVad_CalculateFeatures(VadInstT* self,
+   int16_t* hp_out_ptr = hp_120;     // [2000 - 4000] Hz.
+   int16_t* lp_out_ptr = lp_120;     // [0 - 2000] Hz.
+
+-  RTC_DCHECK_LE(data_length, 240);
+-  RTC_DCHECK_LT(4, kNumChannels - 1);  // Checking maximum `frequency_band`.
++  // RTC_DCHECK_LE(data_length, 240);
++  // RTC_DCHECK_LT(4, kNumChannels - 1);  // Checking maximum `frequency_band`.
+
+   // Split at 2000 Hz and downsample.
+   SplitFilter(in_ptr, data_length, &self->upper_state[frequency_band],
+diff --git a/common_audio/vad/vad_gmm.c b/common_audio/vad/vad_gmm.c
+index 46d2de1..b7bcea6 100644
+--- a/common_audio/vad/vad_gmm.c
++++ b/common_audio/vad/vad_gmm.c
+@@ -10,7 +10,7 @@
+
+ #include "common_audio/vad/vad_gmm.h"
+
+-#include "common_audio/signal_processing/include/signal_processing_library.h"
++// #include "common_audio/signal_processing/include/signal_processing_library.h"
+
+ static const int32_t kCompVar = 22005;
+ static const int16_t kLog2Exp = 5909;  // log2(exp(1)) in Q12.
+diff --git a/common_audio/vad/vad_sp.c b/common_audio/vad/vad_sp.c
+index b745465..ab98ca4 100644
+--- a/common_audio/vad/vad_sp.c
++++ b/common_audio/vad/vad_sp.c
+@@ -10,9 +10,9 @@
+
+ #include "common_audio/vad/vad_sp.h"
+
+-#include "common_audio/signal_processing/include/signal_processing_library.h"
++// #include "common_audio/signal_processing/include/signal_processing_library.h"
+ #include "common_audio/vad/vad_core.h"
+-#include "rtc_base/checks.h"
++// #include "rtc_base/checks.h"
+
+ // Allpass filter coefficients, upper and lower, in Q13.
+ // Upper: 0.64, Lower: 0.17.
+@@ -70,7 +70,7 @@ int16_t WebRtcVad_FindMinimum(VadInstT* self,
+   int16_t* age = &self->index_vector[offset];
+   int16_t* smallest_values = &self->low_value_vector[offset];
+
+-  RTC_DCHECK_LT(channel, kNumChannels);
++  // RTC_DCHECK_LT(channel, kNumChannels);
+
+   // Each value in `smallest_values` is getting 1 loop older. Update `age`, and
+   // remove old values.
+diff --git a/common_audio/vad/webrtc_vad.c b/common_audio/vad/webrtc_vad.c
+index d3c8b08..e507353 100644
+--- a/common_audio/vad/webrtc_vad.c
++++ b/common_audio/vad/webrtc_vad.c
+@@ -13,10 +13,10 @@
+ #include <stdlib.h>
+ #include <string.h>
+
+-#include "common_audio/signal_processing/include/signal_processing_library.h"
++// #include "common_audio/signal_processing/include/signal_processing_library.h"
+ #include "common_audio/vad/vad_core.h"
+
+-static const int kInitCheck = 42;
++static const int kInitCheckPorted = 42;
+ static const int kValidRates[] = {8000, 16000, 32000, 48000};
+ static const size_t kRatesSize = sizeof(kValidRates) / sizeof(*kValidRates);
+ static const int kMaxFrameLengthMs = 30;
+@@ -46,7 +46,7 @@ int WebRtcVad_set_mode(VadInst* handle, int mode) {
+   if (handle == NULL) {
+     return -1;
+   }
+-  if (self->init_flag != kInitCheck) {
++  if (self->init_flag != kInitCheckPorted) {
+     return -1;
+   }
+
+@@ -64,7 +64,7 @@ int WebRtcVad_Process(VadInst* handle,
+     return -1;
+   }
+
+-  if (self->init_flag != kInitCheck) {
++  if (self->init_flag != kInitCheckPorted) {
+     return -1;
+   }
+   if (audio_frame == NULL) {
+--
+2.45.2.windows.1

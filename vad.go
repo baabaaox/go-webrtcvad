@@ -1,11 +1,13 @@
 package webrtcvad
 
-// #cgo linux CPPFLAGS: -DWEBRTC_POSIX
-// #cgo darwin CPPFLAGS: -DWEBRTC_POSIX
-// #cgo windows CPPFLAGS: -DWEBRTC_WIN
 // #cgo CPPFLAGS: -I${SRCDIR}/webrtc_lkgr
-// #cgo CXXFLAGS: -std=c++11
-// #include "webrtc_lkgr/common_audio/vad/webrtc_vad.c"
+// #include "common_audio/signal_processing/resample_by_2_internal.c"
+// #include "common_audio/signal_processing/spl.c"
+// #include "common_audio/vad/vad_filterbank.c"
+// #include "common_audio/vad/vad_core.c"
+// #include "common_audio/vad/vad_gmm.c"
+// #include "common_audio/vad/vad_sp.c"
+// #include "common_audio/vad/webrtc_vad.c"
 import "C"
 import (
 	"errors"

@@ -1,6 +1,8 @@
 package webrtcvad
 
 import (
+	"io"
+	"os"
 	"testing"
 )
 
@@ -41,5 +43,56 @@ func TestValidRateAndFrameLength(t *testing.T) {
 				t.Errorf("rate = %v, length = %v, expected = validate fail", rate, length)
 			}
 		}
+	}
+}
+
+func TestPCM(t *testing.T) {
+	const (
+		// VadMode vad mode
+		VadMode = 0
+		// SampleRate sample rate
+		SampleRate = 16000
+		// BitDepth bit depth
+		BitDepth = 16
+		// FrameDuration frame duration
+		FrameDuration = 20
+	)
+
+	var (
+		frameIndex  = 0
+		frameSize   = SampleRate / 1000 * FrameDuration
+		frameBuffer = make([]byte, SampleRate/1000*FrameDuration*BitDepth/8)
+		frameActive = false
+	)
+
+	audioFile, err := os.Open("./test/test.pcm")
+	if err != nil {
+		t.Errorf("expected = %v", err)
+	}
+	defer audioFile.Close()
+	vadInst := Create()
+	defer Free(vadInst)
+	Init(vadInst)
+	if err != nil {
+		t.Errorf("expected = %v", err)
+	}
+	err = SetMode(vadInst, VadMode)
+	if err != nil {
+		t.Errorf("expected = %v", err)
+	}
+	for {
+		_, err = audioFile.Read(frameBuffer)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Errorf("expected = %v", err)
+		}
+		frameActive, err = Process(vadInst, SampleRate, frameBuffer, frameSize)
+		if err != nil {
+			t.Errorf("expected = %v", err)
+		}
+		t.Logf("Frame: %v, Active: %v", frameIndex, frameActive)
+		frameIndex++
 	}
 }

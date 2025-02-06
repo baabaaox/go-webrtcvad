@@ -10,15 +10,15 @@
 
 #include "common_audio/vad/vad_sp.h"
 
-#include "rtc_base/checks.h"
-#include "common_audio/signal_processing/include/signal_processing_library.h"
+// #include "common_audio/signal_processing/include/signal_processing_library.h"
 #include "common_audio/vad/vad_core.h"
+// #include "rtc_base/checks.h"
 
 // Allpass filter coefficients, upper and lower, in Q13.
 // Upper: 0.64, Lower: 0.17.
-static const int16_t kAllPassCoefsQ13[2] = { 5243, 1392 };  // Q13.
-static const int16_t kSmoothingDown = 6553;  // 0.2 in Q15.
-static const int16_t kSmoothingUp = 32439;  // 0.99 in Q15.
+static const int16_t kAllPassCoefsQ13[2] = {5243, 1392};  // Q13.
+static const int16_t kSmoothingDown = 6553;               // 0.2 in Q15.
+static const int16_t kSmoothingUp = 32439;                // 0.99 in Q15.
 
 // TODO(bjornv): Move this function to vad_filterbank.c.
 // Downsampling filter based on splitting filter and allpass functions.
@@ -36,14 +36,14 @@ void WebRtcVad_Downsampling(const int16_t* signal_in,
   // Filter coefficients in Q13, filter state in Q0.
   for (n = 0; n < half_length; n++) {
     // All-pass filtering upper branch.
-    tmp16_1 = (int16_t) ((tmp32_1 >> 1) +
-        ((kAllPassCoefsQ13[0] * *signal_in) >> 14));
+    tmp16_1 =
+        (int16_t)((tmp32_1 >> 1) + ((kAllPassCoefsQ13[0] * *signal_in) >> 14));
     *signal_out = tmp16_1;
     tmp32_1 = (int32_t)(*signal_in++) - ((kAllPassCoefsQ13[0] * tmp16_1) >> 12);
 
     // All-pass filtering lower branch.
-    tmp16_2 = (int16_t) ((tmp32_2 >> 1) +
-        ((kAllPassCoefsQ13[1] * *signal_in) >> 14));
+    tmp16_2 =
+        (int16_t)((tmp32_2 >> 1) + ((kAllPassCoefsQ13[1] * *signal_in) >> 14));
     *signal_out++ += tmp16_2;
     tmp32_2 = (int32_t)(*signal_in++) - ((kAllPassCoefsQ13[1] * tmp16_2) >> 12);
   }
@@ -52,7 +52,7 @@ void WebRtcVad_Downsampling(const int16_t* signal_in,
   filter_state[1] = tmp32_2;
 }
 
-// Inserts |feature_value| into |low_value_vector|, if it is one of the 16
+// Inserts `feature_value` into `low_value_vector`, if it is one of the 16
 // smallest values the last 100 frames. Then calculates and returns the median
 // of the five smallest values.
 int16_t WebRtcVad_FindMinimum(VadInstT* self,
@@ -66,13 +66,13 @@ int16_t WebRtcVad_FindMinimum(VadInstT* self,
   int16_t alpha = 0;
   int32_t tmp32 = 0;
   // Pointer to memory for the 16 minimum values and the age of each value of
-  // the |channel|.
+  // the `channel`.
   int16_t* age = &self->index_vector[offset];
   int16_t* smallest_values = &self->low_value_vector[offset];
 
-  RTC_DCHECK_LT(channel, kNumChannels);
+  // RTC_DCHECK_LT(channel, kNumChannels);
 
-  // Each value in |smallest_values| is getting 1 loop older. Update |age|, and
+  // Each value in `smallest_values` is getting 1 loop older. Update `age`, and
   // remove old values.
   for (i = 0; i < 16; i++) {
     if (age[i] != 100) {
@@ -88,9 +88,9 @@ int16_t WebRtcVad_FindMinimum(VadInstT* self,
     }
   }
 
-  // Check if |feature_value| is smaller than any of the values in
-  // |smallest_values|. If so, find the |position| where to insert the new value
-  // (|feature_value|).
+  // Check if `feature_value` is smaller than any of the values in
+  // `smallest_values`. If so, find the `position` where to insert the new value
+  // (`feature_value`).
   if (feature_value < smallest_values[7]) {
     if (feature_value < smallest_values[3]) {
       if (feature_value < smallest_values[1]) {
@@ -152,7 +152,7 @@ int16_t WebRtcVad_FindMinimum(VadInstT* self,
     age[position] = 1;
   }
 
-  // Get |current_median|.
+  // Get `current_median`.
   if (self->frame_counter > 2) {
     current_median = smallest_values[2];
   } else if (self->frame_counter > 0) {
@@ -170,7 +170,7 @@ int16_t WebRtcVad_FindMinimum(VadInstT* self,
   tmp32 = (alpha + 1) * self->mean_value[channel];
   tmp32 += (WEBRTC_SPL_WORD16_MAX - alpha) * current_median;
   tmp32 += 16384;
-  self->mean_value[channel] = (int16_t) (tmp32 >> 15);
+  self->mean_value[channel] = (int16_t)(tmp32 >> 15);
 
   return self->mean_value[channel];
 }
